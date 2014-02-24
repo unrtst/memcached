@@ -31,7 +31,7 @@ use Carp;
 use Errno qw( EINPROGRESS EWOULDBLOCK EISCONN );
 use Cache::Memcached 1.21;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 require XSLoader;
 XSLoader::load('Cache::Memcached::GetParserXS', $VERSION);

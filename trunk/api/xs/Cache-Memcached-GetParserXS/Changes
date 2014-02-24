@@ -1,5 +1,10 @@
 Revision history for Perl extension Cache::Memcached::GetParserXS.
 
+0.02  Sun Feb 24 06:15:54 2014
+    - added support for parsing cas gets results.
+      NOTE: utf8 keys were not, and are not, supported, but they are
+            supported in Cache::Memcached::GetParser.pm.
+
 0.01  Mon Jul 17 22:03:06 2006
 	- original version; created by h2xs 1.23 with options
 		-n Cache::Memcached::GetParserXS
