@@ -13,8 +13,12 @@
 #define FLAGS    6
 #define KEY      7  /* current key we're parsing (without the namespace prefix) */
 #define FINISHED 8  /* hashref of keys and flags to be finalized at any time */
+#define CAS      9
 
 #define DEBUG    0
+
+typedef unsigned long long cas_type;
+#define FMT_CAS "%llu"
 
 #include "const-c.inc"
 
@@ -59,6 +63,10 @@ inline void clear_on_item (AV* self) {
 
 inline void set_flags (AV* self, int flags) {
   av_store(self, FLAGS, newSViv(flags));
+}
+
+inline void set_cas(AV* self, cas_type cas) {
+  av_store(self, CAS, newSViv(cas));
 }
 
 inline void set_offset (AV* self, int offset) {
@@ -111,6 +119,8 @@ int parse_buffer (SV* selfref) {
   char* buf;
   unsigned int itemlen;
   unsigned int flags;
+  int use_cas;
+  cas_type cas;
   int scanned;
   int nslen = get_nslen(self);
   SV* on_item = get_on_item(self);
@@ -131,7 +141,7 @@ int parse_buffer (SV* selfref) {
     buf = SvPV(bufsv, len);
     p = buf;
 
-    if (DEBUG) {
+    if (DEBUG) {/*{{{*/
       char first_line[1000];
       int i;
       char *end;
@@ -141,7 +151,7 @@ int parse_buffer (SV* selfref) {
       strncpy (first_line, buf, end - buf + 1);
       first_line[end - buf + 1] = '\0';
       printf("GOT buf (len=%d)\nFirst line: %s\n", len, first_line);
-    }
+    }/*}}}*/
 
     if ((c = *p++) == 'V') {
       if (*p++ != 'A' || *p++ != 'L' || *p++ != 'U' || *p++ != 'E' || *p++ != ' ') {
@@ -151,6 +161,7 @@ int parse_buffer (SV* selfref) {
       }
 
       // Parsing VALUE %s<key> %u<flags> %u<bytes>
+      // -or-    VALUE %s<key> %u<flags> %u<bytes> %u<cas>
 
       for (key = p; *p++ > ' ';)
         ;
@@ -177,9 +188,19 @@ int parse_buffer (SV* selfref) {
 
       for (itemlen = 0; (c = *p++ - '0') >= 0; itemlen = itemlen * 10 + c)
         ;
+
+      // If next char is a space, fetch the 64bit cas value
+      if (c == (signed char)' ' - '0') {
+        if (DEBUG)
+          puts ("CAS detected");
+        use_cas = 1;
+        for (cas = 0; (c = *p++ - '0') >= 0; cas = cas * 10 + c)
+          ;
+      }
+
       if (c != (signed char)'\r' - '0' || *p++ != '\n') {
         if (DEBUG)
-          puts ("ERROR: byte count not CRLF-terminated");
+          puts ("ERROR: cas or byte count not CRLF-terminated");
         goto recover_from_partial_line;
       }
 
@@ -192,15 +213,16 @@ int parse_buffer (SV* selfref) {
       barekey = key + nslen;
       barelen = key_len - nslen;
 
-      if (DEBUG) {
+      if (DEBUG) {/*{{{*/
         char temp_key[256];
         strncpy (temp_key, key, key_len);
         temp_key[key_len] = '\0';
         printf("key=[%s], state=%d, copy=%d\n", key, state, copy);
-      }
+      }/*}}}*/
 
       if (copy) {
         *(key + key_len) = '\0';        // Null-terminate the key in-buffer
+// JOSH I don't know if I need anything here...
         hv_store(ret, barekey, barelen, newSVpv(buf + new_p, copy), 0);
         buf[new_p + copy - 1] = '\0';
 
@@ -213,16 +235,52 @@ int parse_buffer (SV* selfref) {
       sv_chop(bufsv, buf + new_p + copy);
 
       if (copy == state) {
-        hv_store(finished, barekey, barelen, newSViv(flags), 0);
+        // use arrayref to return [cas, flags], or just return flags
+        if (use_cas == 1) {
+          AV * cas_and_flags = newAV();
+          av_extend(cas_and_flags, 1);
+          av_push(cas_and_flags, newSVuv(cas));
+          av_push(cas_and_flags, newSViv(flags));
+          hv_store(finished, barekey, barelen, newRV_noinc((SV *) cas_and_flags), 0);
+        } else {
+          hv_store(finished, barekey, barelen, newSViv(flags), 0);
+        }
+
+// JOSH
+// need to do if here on cas, then
+// AV * cas_and_flags = newAV();
+
+// av_extend(cas_and_flags, 1);
+// av_push(cas_and_flags, newSVuv(cas));
+// av_push(cas_and_flags, newSViv(flags));
+
+// av_store(cas_and_flags, 0, newSVuv(cas));
+// av_store(cas_and_flags, 1, newSViv(flags));
+// hv_store(finished, barekey, barelen, newRV_noinc((SV *) cas_and_flags), 0);
+
+//old:        hv_store(finished, barekey, barelen, newSViv(flags), 0);
 
         set_offset(self, 0);
         set_state(self, 0);
         continue;
       } else {
         /* don't have it all... but buffer is now empty */
-        hv_store(finished, barekey, barelen, newSViv(flags), 0);
+        // use arrayref to return [cas, flags], or just return flags
+        // if (SvIOK_UV(cas)) {
+        if (use_cas == 1) {
+          AV * cas_and_flags = newAV();
+          av_extend(cas_and_flags, 1);
+          av_push(cas_and_flags, newSVuv(cas));
+          av_push(cas_and_flags, newSViv(flags));
+          hv_store(finished, barekey, barelen, newRV_noinc((SV *) cas_and_flags), 0);
+        } else {
+          hv_store(finished, barekey, barelen, newSViv(flags), 0);
+        }
+        //old: hv_store(finished, barekey, barelen, newSViv(flags), 0);
+
         set_offset(self, copy);
         set_flags(self, flags);
+        set_cas(self, cas);
         set_key(self, barekey, barelen);
         set_state(self, state);
 
